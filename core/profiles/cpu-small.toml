@@ -1,0 +1,9 @@
+# Any x86/ARM server with 8+ GB RAM and no GPU (a t3.xlarge, a Hetzner CX, an old office PC).
+description = "CPU only, ~3B model, 4-bit quantized GGUF"
+engine = "llamacpp"
+compose_profile = "cpu"
+model_id = "qwen2.5-3b-instruct"
+model_file = "qwen2.5-3b-instruct-q4_k_m.gguf"
+suggested_source = "Qwen/Qwen2.5-3B-Instruct-GGUF"
+context_length = 4096
+min_ram_gb = 8

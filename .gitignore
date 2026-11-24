@@ -1,0 +1,7 @@
+.ndani/
+ndani.toml
+__pycache__/
+.pytest_cache/
+*.tfstate*
+.terraform/
+bundle/

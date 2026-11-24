@@ -1,0 +1,9 @@
+# 16+ GB RAM, 8+ cores. Slower than GPU but fully usable for internal tools.
+description = "CPU only, ~7B model, 4-bit quantized GGUF"
+engine = "llamacpp"
+compose_profile = "cpu"
+model_id = "qwen2.5-7b-instruct"
+model_file = "qwen2.5-7b-instruct-q4_k_m.gguf"
+suggested_source = "Qwen/Qwen2.5-7B-Instruct-GGUF"
+context_length = 8192
+min_ram_gb = 16

@@ -1,0 +1,16 @@
+# Re-apply the egress guard on boot, after Docker has created its chains.
+# Installed by the bare-metal Ansible playbook and the AWS user-data script.
+[Unit]
+Description=Ndani egress guard
+After=docker.service network-online.target
+Requires=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/ndani/repo
+ExecStart=/opt/ndani/repo/ndani guard apply
+ExecStop=/opt/ndani/repo/ndani guard status
+
+[Install]
+WantedBy=multi-user.target

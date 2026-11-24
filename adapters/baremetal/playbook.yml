@@ -1,0 +1,103 @@
+# Bare metal / on-prem / any VPS. Run from a connected machine:
+#   ansible-playbook -i "server.example," adapters/baremetal/playbook.yml \
+#     -e bundle_src=./bundle -e profile=cpu-small
+#
+# This host DOES have internet during the play (to install packages and pull images);
+# the egress guard seals it at the end. For a truly air-gapped host, install the packages
+# from a local mirror and use `ndani bundle build --with-images`.
+- name: Ndani private LLM host
+  hosts: all
+  become: true
+  vars:
+    ndani_root: /opt/ndani
+    profile: cpu-small
+    bundle_src: ./bundle
+    allow_cidrs: []          # e.g. your LAN, if an internal package mirror lives there
+    gpu: false
+
+  tasks:
+    - name: Base packages
+      ansible.builtin.package:
+        name: [python3, nftables, iptables, rsync, ca-certificates]
+        state: present
+
+    - name: Docker engine + compose plugin (official convenience script)
+      ansible.builtin.shell: curl -fsSL https://get.docker.com | sh
+      args:
+        creates: /usr/bin/docker
+
+    - name: NVIDIA container toolkit
+      when: gpu | bool
+      ansible.builtin.debug:
+        msg: >-
+          Install the NVIDIA driver and nvidia-container-toolkit for your distro first
+          (https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/). Not automated
+          here because driver packaging differs per distro.
+
+    - name: Docker daemon hardening
+      ansible.builtin.copy:
+        dest: /etc/docker/daemon.json
+        mode: "0644"
+        content: |
+          {
+            "icc": false,
+            "no-new-privileges": true,
+            "live-restore": true,
+            "log-driver": "json-file",
+            "log-opts": { "max-size": "20m", "max-file": "5" }
+          }
+      notify: restart docker
+
+    - name: Copy repo
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../../"
+        dest: "{{ ndani_root }}/repo/"
+        rsync_opts: ["--exclude=.git", "--exclude=.ndani", "--exclude=ndani.toml"]
+
+    - name: Copy model bundle (can take a while)
+      ansible.posix.synchronize:
+        src: "{{ bundle_src }}/"
+        dest: "{{ ndani_root }}/bundle/"
+
+    - name: Init config
+      ansible.builtin.command:
+        cmd: >-
+          ./ndani init --profile {{ profile }} --bundle-dir {{ ndani_root }}/bundle
+          {% for c in allow_cidrs %} --allow-cidr {{ c }}{% endfor %}
+        chdir: "{{ ndani_root }}/repo"
+        creates: "{{ ndani_root }}/repo/ndani.toml"
+      register: init_out
+
+    - name: Show the API key (printed once)
+      ansible.builtin.debug:
+        var: init_out.stdout_lines
+      when: init_out.changed
+
+    - name: Build and pull images while the network is still open
+      ansible.builtin.command:
+        cmd: ./ndani prepare
+        chdir: "{{ ndani_root }}/repo"
+
+    - name: Start and seal
+      ansible.builtin.command:
+        cmd: ./ndani up
+        chdir: "{{ ndani_root }}/repo"
+
+    - name: Re-apply guard on boot
+      ansible.builtin.copy:
+        src: "{{ ndani_root }}/repo/core/guard/ndani-guard.service"
+        dest: /etc/systemd/system/ndani-guard.service
+        remote_src: true
+        mode: "0644"
+
+    - name: Enable guard service
+      ansible.builtin.systemd:
+        name: ndani-guard
+        enabled: true
+        daemon_reload: true
+
+  handlers:
+    - name: restart docker
+      ansible.builtin.service:
+        name: docker
+        state: restarted

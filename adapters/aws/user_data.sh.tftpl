@@ -1,0 +1,57 @@
+#!/bin/bash
+# Ndani bootstrap. Runs once at first boot, with NO internet access:
+# everything comes from the bundle bucket (via the S3 gateway endpoint) and SSM.
+set -euo pipefail
+exec > >(tee -a /var/log/ndani-bootstrap.log) 2>&1
+
+export AWS_DEFAULT_REGION="${region}"
+ROOT=/opt/ndani
+mkdir -p "$ROOT"
+
+# The instance usually boots before you've uploaded anything. Wait (up to 6h) for both
+# the repo and the bundle. `aws s3 sync` has no ordering guarantee, so the upload step
+# finishes with a marker object: `aws s3 cp /dev/null s3://<bucket>/READY`.
+for i in $(seq 1 720); do
+  if aws s3api head-object --bucket "${bucket}" --key READY >/dev/null 2>&1; then break; fi
+  [ "$i" -eq 1 ] && echo "[ndani] waiting for s3://${bucket}/READY"
+  sleep 30
+done
+
+echo "[ndani] syncing repo and bundle from s3://${bucket}"
+aws s3 sync "s3://${bucket}/repo/"   "$ROOT/repo/"   --only-show-errors
+aws s3 sync "s3://${bucket}/bundle/" "$ROOT/bundle/" --only-show-errors
+chmod +x "$ROOT/repo/ndani"
+
+cd "$ROOT/repo"
+./ndani init --profile "${profile}" --bundle-dir "$ROOT/bundle" --allow-cidr "${vpc_cidr}" --force >/dev/null
+
+# Host-level allowlist on EC2: the SSM agent needs IMDS (root only) and the VPC resolver,
+# which is itself restricted by Route 53 DNS Firewall to *.amazonaws.com.
+python3 - <<'PY'
+import re, pathlib
+p = pathlib.Path("ndani.toml")
+s = p.read_text()
+s = s.replace('allow_dns_servers = []', 'allow_dns_servers = ["${vpc_resolver}", "169.254.169.253"]')
+s = s.replace('allow_aws_metadata = false', 'allow_aws_metadata = true')
+s = s.replace('allow_aws_time_sync = false', 'allow_aws_time_sync = true')
+s = re.sub(r'bind_addr = "[^"]*"', 'bind_addr = "${bind_addr}"', s)
+s = re.sub(r'port = \d+', 'port = ${gateway_port}', s, count=1)
+p.write_text(s)
+PY
+
+# Secrets: from SSM SecureString, never from user data.
+umask 077
+mkdir -p .ndani
+{
+  echo "NDANI_DB_PASSWORD=$(aws ssm get-parameter --with-decryption --name /ndani/${name}/db_password --query Parameter.Value --output text)"
+  echo "NDANI_API_KEY_HASHES=$(aws ssm get-parameter --with-decryption --name /ndani/${name}/api_key_hashes --query Parameter.Value --output text)"
+} > .ndani/secrets.env
+
+./ndani prepare --from-bundle
+./ndani up
+
+cp core/guard/ndani-guard.service /etc/systemd/system/ndani-guard.service
+systemctl daemon-reload
+systemctl enable ndani-guard.service
+
+echo "[ndani] bootstrap complete"

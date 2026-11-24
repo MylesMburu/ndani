@@ -1,0 +1,142 @@
+# Ndani runtime stack. Started by `ndani up`, which writes ../.ndani/compose.env
+# (interpolation values) and ../.ndani/gateway.env (gateway-only secrets) first.
+#
+# Isolation model:
+#   sealed  - internal network. No route to anything outside this host. The model,
+#             embeddings and database live ONLY here.
+#   edge    - the one network users reach. Only the gateway joins it, and the host
+#             egress guard drops any NEW outbound connection from this bridge, so the
+#             gateway can answer requests but never start a connection out.
+name: ndani
+
+x-hardened: &hardened
+  restart: unless-stopped
+  security_opt: ["no-new-privileges:true"]
+  logging:
+    driver: json-file
+    options: { max-size: "20m", max-file: "5" }
+
+networks:
+  sealed:
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.name: ndani-sealed
+  edge:
+    driver_opts:
+      com.docker.network.bridge.name: ndani-edge
+
+volumes:
+  pgdata:
+
+services:
+  gateway:
+    <<: *hardened
+    build:
+      context: ..
+      dockerfile: core/gateway/Dockerfile
+    image: ndani/gateway:0.1.0
+    container_name: ndani-gateway
+    env_file: ../.ndani/gateway.env
+    networks: [sealed, edge]
+    ports:
+      # Bind to a private interface by default. Never 0.0.0.0 unless you mean it.
+      - "${NDANI_BIND_ADDR:-127.0.0.1}:${NDANI_PORT:-8443}:8080"
+    volumes:
+      - ${NDANI_AUDIT_DIR:-../.ndani/audit}:/var/log/ndani
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    depends_on:
+      pgvector:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request;urllib.request.urlopen('http://127.0.0.1:8080/healthz')"]
+      interval: 15s
+      retries: 5
+
+  # ---- inference: exactly one of these runs, chosen by hardware profile ----
+  inference-gpu:
+    <<: *hardened
+    profiles: [gpu]
+    image: vllm/vllm-openai:${NDANI_VLLM_TAG:-latest}   # pin a tag or digest in ndani.toml
+    container_name: ndani-inference-gpu
+    networks:
+      sealed:
+        aliases: [inference]
+    ipc: host
+    environment:
+      HF_HUB_OFFLINE: "1"
+      TRANSFORMERS_OFFLINE: "1"
+      VLLM_NO_USAGE_STATS: "1"
+      DO_NOT_TRACK: "1"
+    volumes:
+      - ${NDANI_BUNDLE_DIR}/llm:/models/llm:ro
+    command: >
+      --model /models/llm
+      --served-model-name ${NDANI_MODEL_ID}
+      --host 0.0.0.0 --port 8000
+      --max-model-len ${NDANI_CONTEXT_LENGTH:-8192}
+      --gpu-memory-utilization ${NDANI_GPU_MEMORY_UTILIZATION:-0.90}
+      --tensor-parallel-size ${NDANI_TENSOR_PARALLEL:-1}
+      ${NDANI_VLLM_EXTRA_ARGS:-}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  inference-cpu:
+    <<: *hardened
+    profiles: [cpu]
+    image: ghcr.io/ggml-org/llama.cpp:${NDANI_LLAMACPP_TAG:-server}
+    container_name: ndani-inference-cpu
+    networks:
+      sealed:
+        aliases: [inference]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    volumes:
+      - ${NDANI_BUNDLE_DIR}/llm:/models/llm:ro
+    command: >
+      -m /models/llm/${NDANI_MODEL_FILE}
+      --alias ${NDANI_MODEL_ID}
+      --host 0.0.0.0 --port 8000
+      -c ${NDANI_CONTEXT_LENGTH:-4096}
+      --threads ${NDANI_THREADS:-4}
+
+  embeddings:
+    <<: *hardened
+    image: ghcr.io/ggml-org/llama.cpp:${NDANI_LLAMACPP_TAG:-server}
+    container_name: ndani-embeddings
+    networks:
+      sealed:
+        aliases: [embeddings]
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    volumes:
+      - ${NDANI_BUNDLE_DIR}/embed:/models/embed:ro
+    command: >
+      -m /models/embed/${NDANI_EMBED_FILE}
+      --embeddings --pooling ${NDANI_EMBED_POOLING:-mean}
+      --host 0.0.0.0 --port 8001
+      -c 2048 --threads ${NDANI_EMBED_THREADS:-2}
+
+  pgvector:
+    <<: *hardened
+    image: pgvector/pgvector:${NDANI_PGVECTOR_TAG:-pg16}
+    container_name: ndani-pgvector
+    networks: [sealed]
+    environment:
+      POSTGRES_USER: ndani
+      POSTGRES_DB: ndani
+      POSTGRES_PASSWORD: ${NDANI_DB_PASSWORD}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ndani -d ndani"]
+      interval: 5s
+      retries: 20

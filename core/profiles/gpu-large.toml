@@ -1,0 +1,11 @@
+# One 48 GB GPU: EC2 g6e.xlarge (L40S), or an A6000. 32B model, AWQ 4-bit.
+description = "Single 48 GB GPU, 32B model AWQ-quantized via vLLM"
+engine = "vllm"
+compose_profile = "gpu"
+model_id = "qwen2.5-32b-instruct-awq"
+suggested_source = "Qwen/Qwen2.5-32B-Instruct-AWQ"
+context_length = 16384
+gpu_memory_utilization = 0.92
+tensor_parallel = 1
+vllm_extra_args = "--quantization awq"
+min_vram_gb = 44

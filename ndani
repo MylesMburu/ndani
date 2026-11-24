@@ -1,0 +1,4 @@
+#!/usr/bin/env sh
+# Run the CLI straight from a clone. Needs only python3 (3.11+), no pip install.
+HERE="$(cd "$(dirname "$0")" && pwd)"
+PYTHONPATH="$HERE/cli${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m ndani "$@"

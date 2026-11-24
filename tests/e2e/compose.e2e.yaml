@@ -1,0 +1,36 @@
+# Same networks as core/compose.yaml (names, bridge names, internal flag), with
+# stand-in services so the isolation can be tested on a machine with no models.
+name: ndani
+networks:
+  sealed:
+    internal: true
+    driver_opts: { com.docker.network.bridge.name: ndani-sealed }
+  edge:
+    driver_opts: { com.docker.network.bridge.name: ndani-edge }
+
+x-standin: &standin
+  image: ndani/gateway:0.1.0
+  volumes: ["./standin.py:/srv/standin.py:ro"]
+
+services:
+  gateway:
+    <<: *standin
+    container_name: ndani-gateway
+    networks: [sealed, edge]
+    ports: ["127.0.0.1:8443:8080"]
+    command: ["standin.py", "8080"]
+  inference-cpu:
+    <<: *standin
+    container_name: ndani-inference-cpu
+    networks: { sealed: { aliases: [inference] } }
+    command: ["standin.py", "8000"]
+  embeddings:
+    <<: *standin
+    container_name: ndani-embeddings
+    networks: { sealed: { aliases: [embeddings] } }
+    command: ["standin.py", "8001"]
+  pgvector:
+    <<: *standin
+    container_name: ndani-pgvector
+    networks: [sealed]
+    command: ["standin.py", "5432"]

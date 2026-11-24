@@ -1,0 +1,10 @@
+# One 24 GB GPU: EC2 g5.xlarge (A10G) or g6.xlarge (L4), or any RTX 3090/4090 box.
+description = "Single 24 GB GPU, 7B model in fp16 via vLLM"
+engine = "vllm"
+compose_profile = "gpu"
+model_id = "qwen2.5-7b-instruct"
+suggested_source = "Qwen/Qwen2.5-7B-Instruct"
+context_length = 8192
+gpu_memory_utilization = 0.90
+tensor_parallel = 1
+min_vram_gb = 22
